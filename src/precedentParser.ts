@@ -14,6 +14,31 @@ const decodeHtml = (value: string) => {
   return normalize(textarea.value);
 };
 
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const fetchHtmlWithRetry = async (url: string, attempts = 3) => {
+  let lastResponse: Response | null = null;
+
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    const response = await fetch(url, {
+      headers: { Accept: "text/html" }
+    });
+
+    if (response.ok) return response;
+
+    lastResponse = response;
+    if (![408, 425, 429, 500, 502, 503, 504].includes(response.status)) {
+      return response;
+    }
+
+    if (attempt < attempts) {
+      await sleep(300 * attempt);
+    }
+  }
+
+  return lastResponse;
+};
+
 const getCellText = (row: HTMLTableRowElement, index: number) =>
   normalize(row.cells.item(index)?.textContent);
 
@@ -112,9 +137,7 @@ export const listUrlForPage = (selectedPage: number) =>
   `${LIST_PATH}${LIST_PATH.includes("?") ? "&" : "?"}selectedPage=${selectedPage}&docType=AnLe`;
 
 export async function fetchPrecedents(selectedPage: number): Promise<Precedent[]> {
-  const response = await fetch(listUrlForPage(selectedPage), {
-    headers: { Accept: "text/html" }
-  });
+  const response = await fetchHtmlWithRetry(listUrlForPage(selectedPage));
 
   if (!response.ok) {
     throw new Error(`Không tải được danh sách án lệ (${response.status})`);
