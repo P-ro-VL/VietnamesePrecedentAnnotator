@@ -1,0 +1,12 @@
+{
+  "rewrites": [
+    {
+      "source": "/portal/:path*",
+      "destination": "https://anle.toaan.gov.vn/webcenter/portal/:path*"
+    },
+    {
+      "source": "/precedent-pdf/:path*",
+      "destination": "https://anle.toaan.gov.vn/:path*"
+    }
+  ]
+}
