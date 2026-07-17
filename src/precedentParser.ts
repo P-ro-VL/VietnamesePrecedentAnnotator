@@ -4,6 +4,7 @@ const PORTAL_ORIGIN = "https://anle.toaan.gov.vn";
 const LIST_PATH = import.meta.env.DEV
   ? "/api/portal/anle/anle"
   : "/api/portal?path=/anle/anle";
+const CACHE_PAGE_COUNT = 5;
 
 const normalize = (value: string | null | undefined) =>
   (value ?? "").replace(/\s+/g, " ").trim();
@@ -20,15 +21,19 @@ const fetchHtmlWithRetry = async (url: string, attempts = 3) => {
   let lastResponse: Response | null = null;
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    const response = await fetch(url, {
-      headers: { Accept: "text/html" }
-    });
+    try {
+      const response = await fetch(url, {
+        headers: { Accept: "text/html" }
+      });
 
-    if (response.ok) return response;
+      if (response.ok) return response;
 
-    lastResponse = response;
-    if (![408, 425, 429, 500, 502, 503, 504].includes(response.status)) {
-      return response;
+      lastResponse = response;
+      if (![408, 425, 429, 500, 502, 503, 504].includes(response.status)) {
+        return response;
+      }
+    } catch {
+      lastResponse = null;
     }
 
     if (attempt < attempts) {
@@ -37,6 +42,18 @@ const fetchHtmlWithRetry = async (url: string, attempts = 3) => {
   }
 
   return lastResponse;
+};
+
+const cacheUrlForPage = (selectedPage: number) =>
+  `/precedent-cache/page-${selectedPage}.html`;
+
+const fetchCachedHtml = async (selectedPage: number) => {
+  const response = await fetch(cacheUrlForPage(selectedPage), {
+    cache: "force-cache",
+    headers: { Accept: "text/html" }
+  });
+
+  return response.ok ? response.text() : "";
 };
 
 const getCellText = (row: HTMLTableRowElement, index: number) =>
@@ -139,14 +156,18 @@ export const listUrlForPage = (selectedPage: number) =>
 export async function fetchPrecedents(selectedPage: number): Promise<Precedent[]> {
   const response = await fetchHtmlWithRetry(listUrlForPage(selectedPage));
 
-  if (!response.ok) {
-    throw new Error(`Không tải được danh sách án lệ (${response.status})`);
+  let html = response?.ok ? await response.text() : await fetchCachedHtml(selectedPage);
+
+  if (!html && selectedPage > CACHE_PAGE_COUNT) {
+    return [];
   }
 
-  const html = await response.text();
+  if (!html) {
+    throw new Error(`Không tải được danh sách án lệ (${response?.status ?? "network"})`);
+  }
 
   if (!html.trim()) {
-    throw new Error("HTML trả về rỗng, không thể đọc danh sách án lệ.");
+    return [];
   }
 
   const doc = new DOMParser().parseFromString(html, "text/html");

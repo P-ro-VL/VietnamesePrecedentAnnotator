@@ -1,8 +1,27 @@
+import { readFile } from "node:fs/promises";
+import path from "node:path";
 import { proxyGet, sendProxyError, setProxyHeaders } from "../server/proxy.js";
 
 const PORTAL_ORIGIN = "https://anle.toaan.gov.vn";
+const CACHE_PAGE_COUNT = 5;
 
 const firstValue = (value) => (Array.isArray(value) ? value[0] : value);
+
+const readCachedPage = async (selectedPage) => {
+  const page = Number(selectedPage);
+
+  if (!Number.isInteger(page) || page < 1 || page > CACHE_PAGE_COUNT) {
+    return Buffer.alloc(0);
+  }
+
+  try {
+    return await readFile(
+      path.join(process.cwd(), "public", "precedent-cache", `page-${page}.html`)
+    );
+  } catch {
+    return Buffer.alloc(0);
+  }
+};
 
 export default async function handler(request, response) {
   const path = firstValue(request.query.path) || "/anle/anle";
@@ -40,6 +59,19 @@ export default async function handler(request, response) {
     );
     response.send(result.body);
   } catch (error) {
+    const cachedPage = await readCachedPage(firstValue(request.query.selectedPage) || "1");
+
+    const selectedPage = Number(firstValue(request.query.selectedPage) || "1");
+
+    if (cachedPage.length || selectedPage > CACHE_PAGE_COUNT) {
+      response.status(200);
+      response.setHeader("Content-Type", "text/html; charset=utf-8");
+      response.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=3600");
+      response.setHeader("X-Proxy-Fallback", "static-cache");
+      response.send(cachedPage);
+      return;
+    }
+
     sendProxyError(response, error, target);
   }
 }
