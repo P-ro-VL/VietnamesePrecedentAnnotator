@@ -1,13 +1,16 @@
-const PORTAL_BASE_URL = "https://anle.toaan.gov.vn/webcenter/portal";
+const PDF_BASE_URL = "https://anle.toaan.gov.vn";
 
-const getPath = (value) => {
-  if (Array.isArray(value)) return value.join("/");
-  return value || "";
-};
+const firstValue = (value) => (Array.isArray(value) ? value[0] : value);
 
 export default async function handler(request, response) {
-  const path = getPath(request.query.path);
-  const target = new URL(`${PORTAL_BASE_URL}/${path}`);
+  const path = firstValue(request.query.path);
+
+  if (!path) {
+    response.status(400).json({ error: "Missing path" });
+    return;
+  }
+
+  const target = new URL(path.startsWith("/") ? path : `/${path}`, PDF_BASE_URL);
 
   for (const [key, value] of Object.entries(request.query)) {
     if (key === "path") continue;
@@ -22,7 +25,7 @@ export default async function handler(request, response) {
     const upstream = await fetch(target, {
       headers: {
         "User-Agent": "curl/8.7.1",
-        Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+        Accept: "application/pdf,*/*;q=0.8",
         "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
         Referer: "https://anle.toaan.gov.vn/webcenter/portal/anle/anle"
       }
@@ -32,14 +35,14 @@ export default async function handler(request, response) {
     response.status(upstream.status);
     response.setHeader(
       "Content-Type",
-      upstream.headers.get("content-type") || "text/html; charset=utf-8"
+      upstream.headers.get("content-type") || "application/pdf"
     );
-    response.setHeader("Cache-Control", "s-maxage=300, stale-while-revalidate=3600");
+    response.setHeader("Cache-Control", "s-maxage=86400, stale-while-revalidate=604800");
     response.send(Buffer.from(body));
   } catch (error) {
     response.status(502).json({
       error: "Bad Gateway",
-      message: error instanceof Error ? error.message : "Cannot fetch upstream portal"
+      message: error instanceof Error ? error.message : "Cannot fetch upstream PDF"
     });
   }
 }

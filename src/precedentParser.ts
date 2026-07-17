@@ -1,7 +1,9 @@
 import type { Precedent } from "./types";
 
 const PORTAL_ORIGIN = "https://anle.toaan.gov.vn";
-const LIST_PATH = "/api/portal/anle/anle";
+const LIST_PATH = import.meta.env.DEV
+  ? "/api/portal/anle/anle"
+  : "/api/portal?path=/anle/anle";
 
 const normalize = (value: string | null | undefined) =>
   (value ?? "").replace(/\s+/g, " ").trim();
@@ -63,7 +65,13 @@ const makeAbsolutePdfUrl = (href: string) => {
   const url = href.startsWith("http")
     ? new URL(href)
     : new URL(`${href.startsWith("/") ? "" : "/"}${href}`, PORTAL_ORIGIN);
-  return `/api/precedent-pdf${url.pathname}${url.search}`;
+  if (import.meta.env.DEV) {
+    return `/api/precedent-pdf${url.pathname}${url.search}`;
+  }
+
+  const params = new URLSearchParams(url.search);
+  params.set("path", url.pathname);
+  return `/api/precedent-pdf?${params.toString()}`;
 };
 
 const getPrecedentName = (row: HTMLTableRowElement) =>
@@ -101,7 +109,7 @@ const parsePrecedentsFromHtmlString = (html: string, selectedPage: number): Prec
 };
 
 export const listUrlForPage = (selectedPage: number) =>
-  `${LIST_PATH}?selectedPage=${selectedPage}&docType=AnLe`;
+  `${LIST_PATH}${LIST_PATH.includes("?") ? "&" : "?"}selectedPage=${selectedPage}&docType=AnLe`;
 
 export async function fetchPrecedents(selectedPage: number): Promise<Precedent[]> {
   const response = await fetch(listUrlForPage(selectedPage), {
