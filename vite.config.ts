@@ -5,7 +5,7 @@ export default defineConfig({
   plugins: [react()],
   server: {
     proxy: {
-      "/portal": {
+      "/api/portal": {
         target: "https://anle.toaan.gov.vn/webcenter",
         changeOrigin: true,
         secure: false,
@@ -13,9 +13,9 @@ export default defineConfig({
           "User-Agent": "curl/8.7.1",
           Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
         },
-        rewrite: (path) => path.replace(/^\/portal/, "/portal")
+        rewrite: (path) => path.replace(/^\/api\/portal/, "/portal")
       },
-      "/precedent-pdf": {
+      "/api/precedent-pdf": {
         target: "https://anle.toaan.gov.vn",
         changeOrigin: true,
         secure: false,
@@ -23,7 +23,7 @@ export default defineConfig({
           "User-Agent": "curl/8.7.1",
           Accept: "application/pdf,*/*;q=0.8"
         },
-        rewrite: (path) => path.replace(/^\/precedent-pdf/, "")
+        rewrite: (path) => path.replace(/^\/api\/precedent-pdf/, "")
       }
     }
   }
