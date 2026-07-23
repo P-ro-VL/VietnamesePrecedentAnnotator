@@ -9,17 +9,23 @@ const toError = (error) => {
   return new Error(String(error));
 };
 
+const DEFAULT_BROWSER_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
+  "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7"
+};
+
 const requestOnce = (target, headers, timeoutMs) =>
   new Promise((resolve, reject) => {
+    const mergedHeaders = { ...DEFAULT_BROWSER_HEADERS, ...headers };
     const request = https.request(
       target,
       {
         method: "GET",
-        family: 4,
         servername: target.hostname,
         rejectUnauthorized: false,
         timeout: timeoutMs,
-        headers
+        headers: mergedHeaders
       },
       (upstream) => {
         const chunks = [];

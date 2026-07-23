@@ -2,17 +2,20 @@ import { proxyGet, sendProxyError, setProxyHeaders } from "../server/proxy.js";
 
 const PDF_BASE_URL = "https://anle.toaan.gov.vn";
 
-const firstValue = (value) => (Array.isArray(value) ? value[0] : value);
+const getPathString = (value) => {
+  if (Array.isArray(value)) return value.join("/");
+  return value ? String(value) : "";
+};
 
 export default async function handler(request, response) {
-  const path = firstValue(request.query.path);
+  const rawPath = getPathString(request.query.path);
 
-  if (!path) {
+  if (!rawPath) {
     response.status(400).json({ error: "Missing path" });
     return;
   }
 
-  const target = new URL(path.startsWith("/") ? path : `/${path}`, PDF_BASE_URL);
+  const target = new URL(rawPath.startsWith("/") ? rawPath : `/${rawPath}`, PDF_BASE_URL);
 
   for (const [key, value] of Object.entries(request.query)) {
     if (key === "path") continue;
@@ -27,14 +30,14 @@ export default async function handler(request, response) {
     const result = await proxyGet(
       target,
       {
-        "User-Agent": "curl/8.7.1",
+        "User-Agent":
+          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
         Accept: "application/pdf,*/*;q=0.8",
-        "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.8",
-        Connection: "close",
+        "Accept-Language": "vi-VN,vi;q=0.9,en-US;q=0.8,en;q=0.7",
         Host: "anle.toaan.gov.vn",
         Referer: "https://anle.toaan.gov.vn/webcenter/portal/anle/anle"
       },
-      { attempts: 4, timeoutMs: 15000 }
+      { attempts: 2, timeoutMs: 10000 }
     );
 
     setProxyHeaders(

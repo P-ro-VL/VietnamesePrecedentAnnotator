@@ -1,9 +1,7 @@
 import type { Precedent } from "./types";
 
 const PORTAL_ORIGIN = "https://anle.toaan.gov.vn";
-const LIST_PATH = import.meta.env.DEV
-  ? "/api/portal/anle/anle"
-  : "/api/portal?path=/anle/anle";
+const LIST_PATH = "/api/portal/anle/anle";
 const CACHE_PAGE_COUNT = 5;
 
 const normalize = (value: string | null | undefined) =>
@@ -107,13 +105,7 @@ const makeAbsolutePdfUrl = (href: string) => {
   const url = href.startsWith("http")
     ? new URL(href)
     : new URL(`${href.startsWith("/") ? "" : "/"}${href}`, PORTAL_ORIGIN);
-  if (import.meta.env.DEV) {
-    return `/api/precedent-pdf${url.pathname}${url.search}`;
-  }
-
-  const params = new URLSearchParams(url.search);
-  params.set("path", url.pathname);
-  return `/api/precedent-pdf?${params.toString()}`;
+  return `/api/precedent-pdf${url.pathname}${url.search}`;
 };
 
 const getPrecedentName = (row: HTMLTableRowElement) =>
