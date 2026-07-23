@@ -37,7 +37,7 @@ export default async function handler(request, response) {
         Host: "anle.toaan.gov.vn",
         Referer: "https://anle.toaan.gov.vn/webcenter/portal/anle/anle"
       },
-      { attempts: 2, timeoutMs: 10000 }
+      { attempts: 3, timeoutMs: 10000 }
     );
 
     setProxyHeaders(
