@@ -66,26 +66,38 @@ export const loadAnnotationsAsync = async (): Promise<AnnotationStore> => {
 };
 
 /**
- * Save annotations to IndexedDB (unlimited size) and mirror to localStorage if space allows
+ * Save annotations to IndexedDB (unlimited size) and mirror to localStorage if space allows.
+ * Returns true if saved successfully to either storage.
  */
-export const saveAnnotations = (annotations: AnnotationStore) => {
-  // 1. Save to IndexedDB (supports hundreds of MBs/GBs)
-  openDB()
-    .then((db) => {
-      const tx = db.transaction(STORE_NAME, "readwrite");
-      tx.objectStore(STORE_NAME).put(annotations, "all");
-    })
-    .catch((err) => {
-      console.error("Lỗi khi lưu vào IndexedDB:", err);
+export const saveAnnotationsAsync = async (annotations: AnnotationStore): Promise<boolean> => {
+  let idbSuccess = false;
+  try {
+    const db = await openDB();
+    const tx = db.transaction(STORE_NAME, "readwrite");
+    await new Promise<void>((resolve, reject) => {
+      const req = tx.objectStore(STORE_NAME).put(annotations, "all");
+      req.onsuccess = () => resolve();
+      req.onerror = () => reject(req.error);
     });
+    idbSuccess = true;
+  } catch (err) {
+    console.error("Lỗi khi lưu vào IndexedDB:", err);
+  }
 
-  // 2. Mirror to localStorage as backup if size < 4.5MB
+  let localSuccess = false;
   try {
     const json = JSON.stringify(annotations);
     if (json.length < 4.5 * 1024 * 1024) {
       localStorage.setItem(STORAGE_KEY, json);
+      localSuccess = true;
     }
   } catch (error) {
-    console.warn("localStorage hết dung lượng; dữ liệu đã được lưu an toàn trong IndexedDB.", error);
+    console.warn("localStorage quota error:", error);
   }
+
+  return idbSuccess || localSuccess;
+};
+
+export const saveAnnotations = (annotations: AnnotationStore) => {
+  saveAnnotationsAsync(annotations).catch(() => {});
 };

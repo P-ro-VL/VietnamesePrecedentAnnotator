@@ -1,9 +1,10 @@
-import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  AlertCircle,
   ArrowLeft,
   ArrowRight,
   BookOpen,
   Check,
+  CheckCircle2,
   Download,
   Edit3,
   Loader2,
@@ -15,7 +16,7 @@ import {
 } from "lucide-react";
 import { downloadCsv } from "./csv";
 import { fetchPrecedents, type PrecedentWithInitialAnnotation } from "./precedentParser";
-import { loadAnnotations, loadAnnotationsAsync, saveAnnotations } from "./storage";
+import { loadAnnotations, loadAnnotationsAsync, saveAnnotations, saveAnnotationsAsync } from "./storage";
 import type { Annotation, AnnotationStore, RuleDraft } from "./types";
 
 const LABELING_GUIDE_URL =
@@ -139,6 +140,19 @@ export function App() {
   const [showGuideModal, setShowGuideModal] = useState(() => {
     return !sessionStorage.getItem("has_seen_labeling_guide");
   });
+
+  const [toast, setToast] = useState<{
+    type: "success" | "error";
+    message: string;
+  } | null>(null);
+
+  useEffect(() => {
+    if (!toast) return;
+    const timer = setTimeout(() => {
+      setToast(null);
+    }, 3500);
+    return () => clearTimeout(timer);
+  }, [toast]);
 
   const pendingIndexRef = useRef<number | "LAST" | null>(null);
 
@@ -334,15 +348,36 @@ export function App() {
     });
   };
 
-  const saveDraft = () => {
+  const saveDraft = async () => {
     if (!activePrecedent || !draft) return;
-    setAnnotations((current) => ({
-      ...current,
-      [activePrecedent.id]: {
-        ...draft,
-        updated_at: new Date().toISOString()
+    try {
+      const updatedAnnotations = {
+        ...annotations,
+        [activePrecedent.id]: {
+          ...draft,
+          updated_at: new Date().toISOString()
+        }
+      };
+      setAnnotations(updatedAnnotations);
+      const success = await saveAnnotationsAsync(updatedAnnotations);
+      if (success) {
+        const precedentTitle = activePrecedent.attributes.precedentNo || activePrecedent.name;
+        setToast({
+          type: "success",
+          message: `Lưu thành công dữ liệu gán nhãn cho "${precedentTitle}"!`
+        });
+      } else {
+        setToast({
+          type: "error",
+          message: "Lưu dữ liệu thất bại! Không thể ghi dữ liệu vào lưu trữ trình duyệt."
+        });
       }
-    }));
+    } catch (err) {
+      setToast({
+        type: "error",
+        message: `Đã xảy ra lỗi khi lưu: ${err instanceof Error ? err.message : "Lỗi không xác định"}`
+      });
+    }
   };
 
   const exportData = () => {
@@ -904,6 +939,24 @@ export function App() {
               </button>
             </div>
           </div>
+        </div>
+      )}
+
+      {toast && (
+        <div className="fixed bottom-5 right-5 z-[100] flex max-w-md items-center gap-3 border border-slate-700 bg-slate-900 px-4 py-3 text-sm font-medium text-white shadow-2xl transition-all duration-300 animate-in fade-in slide-in-from-bottom-2">
+          {toast.type === "success" ? (
+            <CheckCircle2 size={20} className="shrink-0 text-emerald-400" />
+          ) : (
+            <AlertCircle size={20} className="shrink-0 text-red-400" />
+          )}
+          <span className="flex-1">{toast.message}</span>
+          <button
+            type="button"
+            onClick={() => setToast(null)}
+            className="ml-2 text-slate-400 hover:text-white"
+          >
+            <X size={16} />
+          </button>
         </div>
       )}
     </main>
