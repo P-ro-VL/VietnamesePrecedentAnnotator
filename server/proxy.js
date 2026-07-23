@@ -30,9 +30,89 @@ const legacyAgentOptions = {
 
 const legacyAgent = new https.Agent(legacyAgentOptions);
 
+const PROXY_BRIDGES = [
+  (url) => `https://corsproxy.io/?${encodeURIComponent(url)}`,
+  (url) => `https://api.allorigins.win/raw?url=${encodeURIComponent(url)}`
+];
+
+const fetchViaProxyBridge = async (targetUrl, headers, timeoutMs) => {
+  for (const bridgeFn of PROXY_BRIDGES) {
+    try {
+      const bridgeUrl = bridgeFn(targetUrl);
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+      const res = await globalThis.fetch(bridgeUrl, {
+        method: "GET",
+        headers: {
+          ...DEFAULT_BROWSER_HEADERS,
+          ...headers
+        },
+        signal: controller.signal
+      });
+
+      clearTimeout(timer);
+
+      if (res.ok) {
+        const arrayBuf = await res.arrayBuffer();
+        const resHeaders = {};
+        res.headers.forEach((val, key) => {
+          resHeaders[key] = val;
+        });
+
+        const body = Buffer.from(arrayBuf);
+        if (body.length > 0) {
+          return {
+            status: res.status,
+            headers: resHeaders,
+            body
+          };
+        }
+      }
+    } catch {
+      // Continue trying next bridge
+    }
+  }
+
+  return null;
+};
+
 const requestOnce = async (target, headers, timeoutMs) => {
   const mergedHeaders = { ...DEFAULT_BROWSER_HEADERS, ...headers };
+  const targetUrlStr = target.toString();
 
+  // Custom proxy URL from env if configured
+  const customProxy = process.env.PROXY_URL || process.env.FORWARD_PROXY_URL;
+  if (customProxy) {
+    try {
+      const proxyTarget = `${customProxy.endsWith("/") ? customProxy : customProxy + "/"}${encodeURIComponent(targetUrlStr)}`;
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      const res = await globalThis.fetch(proxyTarget, {
+        method: "GET",
+        headers: mergedHeaders,
+        signal: controller.signal
+      });
+      clearTimeout(timer);
+
+      if (res.ok) {
+        const arrayBuf = await res.arrayBuffer();
+        const resHeaders = {};
+        res.headers.forEach((val, key) => {
+          resHeaders[key] = val;
+        });
+        return {
+          status: res.status,
+          headers: resHeaders,
+          body: Buffer.from(arrayBuf)
+        };
+      }
+    } catch {
+      // continue to direct attempts
+    }
+  }
+
+  // Attempt 1: Direct https.request with legacy TLS agent
   try {
     return await new Promise((resolve, reject) => {
       const request = https.request(
@@ -67,11 +147,18 @@ const requestOnce = async (target, headers, timeoutMs) => {
       request.end();
     });
   } catch (httpsErr) {
+    // Attempt 2: Fallback via proxy bridge if direct connection fails (e.g. ECONNRESET due to Vercel IP geoblock)
+    const bridgeResult = await fetchViaProxyBridge(targetUrlStr, headers, timeoutMs);
+    if (bridgeResult && bridgeResult.status === 200 && bridgeResult.body.length > 0) {
+      return bridgeResult;
+    }
+
+    // Attempt 3: Direct fetch fallback
     if (typeof globalThis.fetch === "function") {
       try {
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), timeoutMs);
-        const res = await globalThis.fetch(target.toString(), {
+        const res = await globalThis.fetch(targetUrlStr, {
           method: "GET",
           headers: mergedHeaders,
           signal: controller.signal
@@ -88,9 +175,10 @@ const requestOnce = async (target, headers, timeoutMs) => {
           body: Buffer.from(arrayBuf)
         };
       } catch {
-        // Fall back to original https error if fetch also fails
+        // preserve initial httpsErr
       }
     }
+
     throw httpsErr;
   }
 };
