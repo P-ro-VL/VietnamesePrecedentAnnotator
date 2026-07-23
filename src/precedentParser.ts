@@ -2,7 +2,6 @@ import type { Precedent } from "./types";
 
 const PORTAL_ORIGIN = "https://anle.toaan.gov.vn";
 const LIST_PATH = "/api/portal/anle/anle";
-const CACHE_PAGE_COUNT = 5;
 
 const normalize = (value: string | null | undefined) =>
   (value ?? "").replace(/\s+/g, " ").trim();
@@ -40,18 +39,6 @@ const fetchHtmlWithRetry = async (url: string, attempts = 3) => {
   }
 
   return lastResponse;
-};
-
-const cacheUrlForPage = (selectedPage: number) =>
-  `/precedent-cache/page-${selectedPage}.html`;
-
-const fetchCachedHtml = async (selectedPage: number) => {
-  const response = await fetch(cacheUrlForPage(selectedPage), {
-    cache: "force-cache",
-    headers: { Accept: "text/html" }
-  });
-
-  return response.ok ? response.text() : "";
 };
 
 const getCellText = (row: HTMLTableRowElement, index: number) =>
@@ -148,17 +135,13 @@ export const listUrlForPage = (selectedPage: number) =>
 export async function fetchPrecedents(selectedPage: number): Promise<Precedent[]> {
   const response = await fetchHtmlWithRetry(listUrlForPage(selectedPage));
 
-  let html = response?.ok ? await response.text() : await fetchCachedHtml(selectedPage);
-
-  if (!html && selectedPage > CACHE_PAGE_COUNT) {
-    return [];
+  if (!response || !response.ok) {
+    throw new Error(`Không tải được danh sách án lệ (Mã lỗi: ${response?.status ?? "network"})`);
   }
 
-  if (!html) {
-    throw new Error(`Không tải được danh sách án lệ (${response?.status ?? "network"})`);
-  }
+  const html = await response.text();
 
-  if (!html.trim()) {
+  if (!html || !html.trim()) {
     return [];
   }
 
