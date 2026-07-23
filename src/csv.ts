@@ -20,55 +20,103 @@ const COLUMNS = [
   "traceability"
 ] as const;
 
-const linesToJsonObject = (value: string, prefix: string) => {
-  const entries = value
-    .split(/\n+/)
-    .map((line) => line.trim())
-    .filter(Boolean);
-
-  return entries.reduce<Record<string, string>>((acc, entry, index) => {
-    const match = entry.match(/^([A-Z]+\d+)\s*[:.-]\s*(.+)$/i);
-    if (match) {
-      acc[match[1].toUpperCase()] = match[2].trim();
-    } else {
-      acc[`${prefix}${index + 1}`] = entry;
-    }
-    return acc;
-  }, {});
+const caseFactsToJson = (annotation: Annotation) => {
+  if (Array.isArray(annotation.case_facts)) {
+    return JSON.stringify(
+      annotation.case_facts
+        .filter((item) => item.fact.trim())
+        .map((item, idx) => ({
+          id: item.id || `F${idx + 1}`,
+          fact: item.fact.trim()
+        }))
+    );
+  }
+  return String(annotation.case_facts || "");
 };
 
-const legalRulesToJson = (annotation: Annotation) =>
-  annotation.legal_rules
+const legalRulesToJson = (annotation: Annotation) => {
+  const rootChildren = annotation.legal_rules
     .filter(
       (rule) =>
-        rule.conditions.trim() ||
+        rule.conditions.some((c) => c.trim()) ||
         rule.conclusion.trim() ||
         rule.exception.trim() ||
         rule.sourceParagraph.trim() ||
         rule.statutoryProvisions.trim()
     )
-    .map((rule, index) => ({
-      id: rule.id || `R${index + 1}`,
-      rule: {
+    .map((rule, idx) => {
+      const ruleId = `R0.${idx + 1}`;
+      const childFacts = rule.conditions
+        .filter((c) => c.trim())
+        .map((cond, cIdx) => ({
+          id: `${ruleId}.${cIdx + 1}`,
+          predicate: `condition_${cIdx + 1}`,
+          description: cond.trim(),
+          node_type: "fact",
+          operator: "",
+          children: [],
+          fact_reference: `F${cIdx + 1}`,
+          exceptions: [],
+          source: {
+            paragraph: rule.sourceParagraph.trim(),
+            statutory_provisions: rule.statutoryProvisions
+              .split(/\n+/)
+              .map((s) => s.trim())
+              .filter(Boolean)
+          }
+        }));
+
+      return {
+        id: ruleId,
+        predicate: rule.name ? rule.name.trim() : `rule_${idx + 1}`,
+        description: rule.conclusion.trim(),
+        node_type: "rule",
         operator: rule.operator,
-        conditions: rule.conditions
+        children: childFacts,
+        fact_reference: "",
+        exceptions: rule.exception
           .split(/\n+/)
-          .map((item) => item.trim())
+          .map((e) => e.trim())
           .filter(Boolean),
-        conclusion: rule.conclusion.trim(),
-        exception: rule.exception
-          .split(/\n+/)
-          .map((item) => item.trim())
-          .filter(Boolean)
-      },
-      source: {
-        paragraph: rule.sourceParagraph.trim(),
-        statutory_provisions: rule.statutoryProvisions
-          .split(/\n+/)
-          .map((item) => item.trim())
-          .filter(Boolean)
-      }
-    }));
+        source: {
+          paragraph: rule.sourceParagraph.trim(),
+          statutory_provisions: rule.statutoryProvisions
+            .split(/\n+/)
+            .map((s) => s.trim())
+            .filter(Boolean)
+        }
+      };
+    });
+
+  const rootObject = {
+    root: {
+      id: "R0",
+      predicate: "main_rule",
+      description: annotation.precedent_name || "",
+      node_type: "rule",
+      operator: "AND",
+      children: rootChildren
+    }
+  };
+
+  return JSON.stringify(rootObject);
+};
+
+const traceabilityToJson = (annotation: Annotation) => {
+  const factRefs = Array.isArray(annotation.case_facts)
+    ? annotation.case_facts
+        .filter((f) => f.fact.trim())
+        .map((f, idx) => ({
+          fact_id: f.id || `F${idx + 1}`,
+          reference: "Phần Nhận định của Tòa án"
+        }))
+    : [];
+
+  return JSON.stringify({
+    facts: factRefs,
+    legal_conclusion: annotation.legal_conclusion_source || ""
+  });
+};
 
 const serializeCell = (value: unknown) => {
   const text = typeof value === "string" ? value : JSON.stringify(value);
@@ -78,10 +126,10 @@ const serializeCell = (value: unknown) => {
 export const buildCsv = (annotations: Annotation[]) => {
   const rows = annotations.map((annotation) => ({
     ...annotation,
-    case_facts: linesToJsonObject(annotation.case_facts, "F"),
+    case_facts: caseFactsToJson(annotation),
     legal_rules: legalRulesToJson(annotation),
     ground_truth: String(annotation.ground_truth),
-    traceability: linesToJsonObject(annotation.traceability, "T")
+    traceability: traceabilityToJson(annotation)
   }));
 
   return [

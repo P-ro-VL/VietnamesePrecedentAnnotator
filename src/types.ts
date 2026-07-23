@@ -14,10 +14,16 @@ export type Precedent = {
   };
 };
 
+export type FactItem = {
+  id: string;
+  fact: string;
+};
+
 export type RuleDraft = {
   id: string;
+  name?: string;
   operator: "AND" | "OR";
-  conditions: string;
+  conditions: string[];
   conclusion: string;
   exception: string;
   sourceParagraph: string;
@@ -37,10 +43,11 @@ export type Annotation = {
   plaintiff: string;
   defendant: string;
   related_persons: string;
-  case_facts: string;
+  case_facts: FactItem[];
   legal_rules: RuleDraft[];
   benchmark_question: string;
   ground_truth: boolean | "";
+  legal_conclusion_source?: string;
   traceability: string;
   status?: string;
   effective_date?: string;

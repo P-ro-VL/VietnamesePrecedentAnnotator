@@ -1,182 +1,288 @@
-import type { Precedent } from "./types";
+import type { Annotation, FactItem, Precedent, RuleDraft } from "./types";
+import { getDocumentUrl } from "./dataManifest";
 
-const PORTAL_ORIGIN = "https://anle.toaan.gov.vn";
-const LIST_PATH = "/api/portal/anle/anle";
+export function parseCsv(text: string): string[][] {
+  const rows: string[][] = [];
+  let row: string[] = [];
+  let field = "";
+  let inQuotes = false;
 
-const normalize = (value: string | null | undefined) =>
-  (value ?? "").replace(/\s+/g, " ").trim();
-
-const decodeHtml = (value: string) => {
-  const textarea = document.createElement("textarea");
-  textarea.innerHTML = value;
-  return normalize(textarea.value);
-};
-
-const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-const fetchHtmlWithRetry = async (url: string, attempts = 3) => {
-  let lastResponse: Response | null = null;
-
-  for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    try {
-      const response = await fetch(url, {
-        headers: { Accept: "text/html" }
-      });
-
-      if (response.ok) return response;
-
-      lastResponse = response;
-      if (![408, 425, 429, 500, 502, 503, 504].includes(response.status)) {
-        return response;
+  for (let i = 0; i < text.length; i++) {
+    const char = text[i];
+    const nextChar = text[i + 1];
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') {
+        field += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
       }
-    } catch {
-      lastResponse = null;
-    }
-
-    if (attempt < attempts) {
-      await sleep(300 * attempt);
+    } else if (char === "," && !inQuotes) {
+      row.push(field);
+      field = "";
+    } else if ((char === "\r" || char === "\n") && !inQuotes) {
+      if (char === "\r" && nextChar === "\n") i++;
+      row.push(field);
+      field = "";
+      if (row.length > 1 || row[0] !== "") rows.push(row);
+      row = [];
+    } else {
+      field += char;
     }
   }
+  if (field || row.length) {
+    row.push(field);
+    rows.push(row);
+  }
+  return rows;
+}
 
-  return lastResponse;
-};
-
-const getCellText = (row: HTMLTableRowElement, index: number) =>
-  normalize(row.cells.item(index)?.textContent);
-
-const looksLikePrecedentTable = (table: HTMLTableElement) => {
-  const headers = Array.from(table.querySelectorAll("thead th")).map((cell) =>
-    normalize(cell.textContent)
-  );
-
-  if (headers.includes("Số án lệ") && headers.includes("Tên án lệ")) {
-    return true;
+export function parseCaseFacts(factsStr: string): FactItem[] {
+  if (!factsStr || !factsStr.trim()) return [{ id: "F1", fact: "" }];
+  try {
+    const parsed = JSON.parse(factsStr);
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      return parsed.map((item, idx) => ({
+        id: item.id || `F${idx + 1}`,
+        fact: item.fact || String(item)
+      }));
+    }
+  } catch {
+    // Plain string parsing
   }
 
-  const firstRow = table.rows.item(0);
-  if (!firstRow || firstRow.cells.length < 3) return false;
-  return (
-    getCellText(firstRow, 0) === "Số án lệ" &&
-    getCellText(firstRow, 1) === "Tên án lệ"
-  );
+  const lines = factsStr
+    .split(/\n+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+
+  if (lines.length === 0) return [{ id: "F1", fact: "" }];
+
+  return lines.map((line, idx) => {
+    const match = line.match(/^(F\d+)\s*[:.-]\s*(.+)$/i);
+    if (match) {
+      return { id: match[1].toUpperCase(), fact: match[2].trim() };
+    }
+    return { id: `F${idx + 1}`, fact: line };
+  });
+}
+
+const emptyRule = (index: number): RuleDraft => ({
+  id: `R${index}`,
+  operator: "AND",
+  conditions: [""],
+  conclusion: "",
+  exception: "",
+  sourceParagraph: "",
+  statutoryProvisions: ""
+});
+
+export function parseLegalRules(rulesStr: string): RuleDraft[] {
+  if (!rulesStr || !rulesStr.trim()) return [emptyRule(1)];
+  try {
+    const parsed = JSON.parse(rulesStr);
+
+    function collectConditionsAndMeta(node: any) {
+      const conds: string[] = [];
+      let sourcePara = node.source?.paragraph || "";
+      let statProvs = Array.isArray(node.source?.statutory_provisions)
+        ? node.source.statutory_provisions.join("\n")
+        : "";
+      let exception = Array.isArray(node.exceptions) ? node.exceptions.join("\n") : "";
+
+      function collectLeafs(n: any) {
+        if (!n) return;
+        const text = n.description || n.fact || "";
+        if (text && (!n.children || n.children.length === 0)) {
+          conds.push(text);
+        } else if (text && n.node_type === "fact") {
+          conds.push(text);
+        }
+
+        if (n.source?.paragraph && !sourcePara) sourcePara = n.source.paragraph;
+        if (
+          Array.isArray(n.source?.statutory_provisions) &&
+          n.source.statutory_provisions.length &&
+          !statProvs
+        ) {
+          statProvs = n.source.statutory_provisions.join("\n");
+        }
+
+        if (Array.isArray(n.children)) {
+          n.children.forEach(collectLeafs);
+        }
+      }
+
+      if (Array.isArray(node.children)) {
+        node.children.forEach(collectLeafs);
+      }
+
+      return {
+        name: node.predicate || node.name || "",
+        conditions: conds.length ? conds : [node.description || ""],
+        conclusion: node.description || "",
+        exception,
+        sourceParagraph: sourcePara,
+        statutoryProvisions: statProvs,
+        operator: (node.operator === "OR" ? "OR" : "AND") as "AND" | "OR"
+      };
+    }
+
+    const sections: RuleDraft[] = [];
+    if (parsed.root) {
+      const res = collectConditionsAndMeta(parsed.root);
+      sections.push({
+        id: "R1",
+        name: res.name,
+        operator: res.operator,
+        conditions: res.conditions,
+        conclusion: res.conclusion,
+        exception: res.exception,
+        sourceParagraph: res.sourceParagraph,
+        statutoryProvisions: res.statutoryProvisions
+      });
+    } else if (Array.isArray(parsed)) {
+      parsed.forEach((item, idx) => {
+        const res = collectConditionsAndMeta(item);
+        sections.push({
+          id: `R${idx + 1}`,
+          name: res.name,
+          operator: res.operator,
+          conditions: res.conditions,
+          conclusion: res.conclusion,
+          exception: res.exception,
+          sourceParagraph: res.sourceParagraph,
+          statutoryProvisions: res.statutoryProvisions
+        });
+      });
+    }
+
+    return sections.length ? sections : [emptyRule(1)];
+  } catch {
+    return [emptyRule(1)];
+  }
+}
+
+export function parseTraceabilityLegalConclusion(traceabilityStr: string): string {
+  if (!traceabilityStr || !traceabilityStr.trim()) return "";
+  try {
+    const parsed = JSON.parse(traceabilityStr);
+    if (parsed && typeof parsed.legal_conclusion === "string") {
+      return parsed.legal_conclusion;
+    }
+  } catch {
+    // plain text
+  }
+  return traceabilityStr;
+}
+
+export type PrecedentWithInitialAnnotation = Precedent & {
+  initialAnnotation: Annotation;
 };
 
-const parseAttributes = (row: HTMLTableRowElement): Precedent["attributes"] => {
-  const fields = new Map<string, string>();
-  const attributeRows = row.querySelectorAll<HTMLTableRowElement>(
-    ".show-thuoctinh table tr"
-  );
+let cachedPrecedents: PrecedentWithInitialAnnotation[] | null = null;
 
-  attributeRows.forEach((attributeRow) => {
-    const leftKey = normalize(attributeRow.cells.item(0)?.textContent);
-    const leftValue = normalize(attributeRow.cells.item(1)?.textContent);
-    const rightKey = normalize(attributeRow.cells.item(2)?.textContent);
-    const rightValue = normalize(attributeRow.cells.item(3)?.textContent);
+export async function fetchAllPrecedentsFromCsv(): Promise<PrecedentWithInitialAnnotation[]> {
+  if (cachedPrecedents) return cachedPrecedents;
 
-    if (leftKey) fields.set(leftKey, leftValue);
-    if (rightKey) fields.set(rightKey, rightValue);
+  const response = await fetch("/data/data.csv");
+  if (!response.ok) {
+    throw new Error(`Không thể tải file /data/data.csv (HTTP ${response.status})`);
+  }
+
+  const text = await response.text();
+  const rawRows = parseCsv(text);
+
+  if (rawRows.length <= 1) {
+    throw new Error("File /data/data.csv không có dữ liệu.");
+  }
+
+  const dataRows = rawRows.slice(1);
+
+  cachedPrecedents = dataRows.map((row, index) => {
+    const caseId = row[0] || `CASE_${String(index + 1).padStart(3, "0")}`;
+    const precedentNo = row[1] || "";
+    const precedentName = row[2] || "";
+    const domain = row[3] || "";
+    const adoptingBody = row[4] || "";
+    const adoptionDate = row[5] || "";
+    const publicationDecision = row[6] || "";
+    const sourceJudgment = row[7] || "";
+    const caseType = row[8] || "";
+    const plaintiff = row[9] || "";
+    const defendant = row[10] || "";
+    const relatedPersons = row[11] || "";
+    const caseFactsStr = row[12] || "";
+    const legalRulesStr = row[13] || "";
+    const benchmarkQuestion = row[14] || "";
+    const groundTruthRaw = (row[15] || "").trim().toLowerCase();
+    const groundTruth: boolean | "" =
+      groundTruthRaw === "true" ? true : groundTruthRaw === "false" ? false : "";
+    const traceabilityStr = row[16] || "";
+
+    const docUrl = getDocumentUrl(index);
+
+    const precedent: Precedent = {
+      id: caseId,
+      index: index + 1,
+      name: precedentName || `Án lệ ${precedentNo}`,
+      downloadHref: docUrl,
+      pdfUrl: docUrl,
+      attributes: {
+        precedentNo,
+        domain,
+        status: "Đang có hiệu lực",
+        adoptionDate,
+        effectiveDate: "",
+        publicationDate: ""
+      }
+    };
+
+    const initialAnnotation: Annotation = {
+      case_id: caseId,
+      precedent_no: precedentNo,
+      precedent_name: precedentName,
+      domain,
+      adopting_body: adoptingBody,
+      adoption_date: adoptionDate,
+      publication_decision: publicationDecision,
+      source_judgment: sourceJudgment,
+      case_type: caseType,
+      plaintiff,
+      defendant,
+      related_persons: relatedPersons,
+      case_facts: parseCaseFacts(caseFactsStr),
+      legal_rules: parseLegalRules(legalRulesStr),
+      benchmark_question: benchmarkQuestion,
+      ground_truth: groundTruth,
+      legal_conclusion_source: parseTraceabilityLegalConclusion(traceabilityStr),
+      traceability: traceabilityStr,
+      status: "Đang có hiệu lực"
+    };
+
+    return {
+      ...precedent,
+      initialAnnotation
+    };
   });
 
+  return cachedPrecedents;
+}
+
+export async function fetchPrecedents(
+  selectedPage: number,
+  pageSize = 10
+): Promise<{ items: PrecedentWithInitialAnnotation[]; totalPages: number; totalCount: number }> {
+  const all = await fetchAllPrecedentsFromCsv();
+  const totalCount = all.length;
+  const totalPages = Math.ceil(totalCount / pageSize) || 1;
+  const start = (selectedPage - 1) * pageSize;
   return {
-    precedentNo: fields.get("Số án lệ") ?? "",
-    domain: fields.get("Lĩnh vực") ?? "",
-    status: fields.get("Trạng thái") ?? "",
-    adoptionDate: fields.get("Ngày thông qua") ?? "",
-    effectiveDate: fields.get("Ngày áp dụng") ?? "",
-    publicationDate: fields.get("Ngày công bố") ?? ""
+    items: all.slice(start, start + pageSize),
+    totalPages,
+    totalCount
   };
-};
-
-const makeAbsolutePdfUrl = (href: string) => {
-  if (!href) return "";
-  const url = href.startsWith("http")
-    ? new URL(href)
-    : new URL(`${href.startsWith("/") ? "" : "/"}${href}`, PORTAL_ORIGIN);
-  return `/api/precedent-pdf${url.pathname}${url.search}`;
-};
-
-const getPrecedentName = (row: HTMLTableRowElement) =>
-  normalize(row.cells.item(1)?.querySelector("p a")?.textContent) || getCellText(row, 1);
-
-const parsePrecedentsFromHtmlString = (html: string, selectedPage: number): Precedent[] => {
-  const dataRows = html.match(/<tr>\s*<td><a[\s\S]*?<\/td>\s*<\/tr>/g) ?? [];
-
-  return dataRows
-    .filter((row) => row.includes("show-thuoctinh") && row.includes("Tải về"))
-    .map((row, index) => {
-      const nameMatch = row.match(/<td>\s*<p>\s*<a[\s\S]*?<span[^>]*>([\s\S]*?)<\/span>/i);
-      const hrefMatch = row.match(/<a\s+href=['"]([^'"]+)['"][^>]*>\s*<i[^>]*fa-download[\s\S]*?Tải về\s*<\/a>/i);
-      const attributes: Precedent["attributes"] = {
-        precedentNo: decodeHtml(row.match(/<td>\s*Số án lệ\s*<\/td>\s*<td>\s*<span>\s*([\s\S]*?)<\/span>/i)?.[1] ?? ""),
-        domain: decodeHtml(row.match(/<td>\s*Lĩnh vực\s*<\/td>\s*<td>\s*([\s\S]*?)<\/td>/i)?.[1] ?? ""),
-        status: decodeHtml(row.match(/<td>\s*Trạng thái\s*<\/td>\s*<td>\s*([\s\S]*?)<\/td>/i)?.[1] ?? ""),
-        adoptionDate: decodeHtml(row.match(/<td[^>]*>\s*Ngày thông qua\s*<\/td>\s*<td[^>]*>[\s\S]*?<span[^>]*>\s*([\s\S]*?)<\/span>/i)?.[1] ?? ""),
-        effectiveDate: decodeHtml(row.match(/<td>\s*Ngày áp dụng\s*<\/td>\s*<td>\s*<span[^>]*>\s*([\s\S]*?)<\/span>/i)?.[1] ?? ""),
-        publicationDate: decodeHtml(row.match(/<td>\s*Ngày công bố\s*<\/td>\s*<td>\s*<span[^>]*>\s*([\s\S]*?)<\/span>/i)?.[1] ?? "")
-      };
-      const name = decodeHtml(nameMatch?.[1] ?? "");
-      const downloadHref = hrefMatch?.[1] ?? "";
-
-      return {
-        id: attributes.precedentNo || `${selectedPage}-${index + 1}-${name}`,
-        index: index + 1,
-        name,
-        downloadHref,
-        pdfUrl: makeAbsolutePdfUrl(downloadHref),
-        attributes
-      };
-    })
-    .filter((precedent) => precedent.name);
-};
+}
 
 export const listUrlForPage = (selectedPage: number) =>
-  `${LIST_PATH}${LIST_PATH.includes("?") ? "&" : "?"}selectedPage=${selectedPage}&docType=AnLe`;
-
-export async function fetchPrecedents(selectedPage: number): Promise<Precedent[]> {
-  const response = await fetchHtmlWithRetry(listUrlForPage(selectedPage));
-
-  if (!response || !response.ok) {
-    throw new Error(`Không tải được danh sách án lệ (Mã lỗi: ${response?.status ?? "network"})`);
-  }
-
-  const html = await response.text();
-
-  if (!html || !html.trim()) {
-    return [];
-  }
-
-  const doc = new DOMParser().parseFromString(html, "text/html");
-  const tables = Array.from(doc.querySelectorAll("table"));
-  const table =
-    tables.find(looksLikePrecedentTable) ??
-    tables.find((candidate) => candidate.querySelector(".show-thuoctinh"));
-
-  if (!table) {
-    const fallbackItems = parsePrecedentsFromHtmlString(html, selectedPage);
-    if (fallbackItems.length) return fallbackItems;
-    throw new Error("Không tìm thấy bảng án lệ trong HTML trả về.");
-  }
-
-  const items = Array.from(table.querySelectorAll<HTMLTableRowElement>("tbody > tr"))
-    .filter((row) => row.querySelector(".show-thuoctinh"))
-    .map((row, index) => {
-      const link = Array.from(row.querySelectorAll<HTMLAnchorElement>("a")).find(
-        (anchor) => normalize(anchor.textContent).includes("Tải về")
-      );
-      const name = getPrecedentName(row);
-      const attributes = parseAttributes(row);
-      const downloadHref = link?.getAttribute("href") ?? "";
-
-      return {
-        id: attributes.precedentNo || `${selectedPage}-${index + 1}-${name}`,
-        index: index + 1,
-        name,
-        downloadHref,
-        pdfUrl: makeAbsolutePdfUrl(downloadHref),
-        attributes
-      };
-    })
-    .filter((precedent) => precedent.name);
-
-  return items.length ? items : parsePrecedentsFromHtmlString(html, selectedPage);
-}
+  `/data/data.csv?page=${selectedPage}`;

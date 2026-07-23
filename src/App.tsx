@@ -1,30 +1,37 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   ArrowLeft,
   ArrowRight,
+  BookOpen,
   Check,
   Download,
   Edit3,
   Loader2,
+  Minus,
+  Plus,
   Save,
+  Trash2,
   X
 } from "lucide-react";
 import { downloadCsv } from "./csv";
-import { fetchPrecedents } from "./precedentParser";
-import { loadAnnotations, saveAnnotations } from "./storage";
-import type { Annotation, AnnotationStore, Precedent, RuleDraft } from "./types";
+import { fetchPrecedents, type PrecedentWithInitialAnnotation } from "./precedentParser";
+import { loadAnnotations, loadAnnotationsAsync, saveAnnotations } from "./storage";
+import type { Annotation, AnnotationStore, RuleDraft } from "./types";
+
+const LABELING_GUIDE_URL =
+  "https://docs.google.com/document/d/1GGHw_LtnvD9aOWkEHXPIBMybl5213zyWfWUULVNKJTM/edit?usp=sharing";
 
 const emptyRule = (index: number): RuleDraft => ({
   id: `R${index}`,
   operator: "AND",
-  conditions: "",
+  conditions: [""],
   conclusion: "",
   exception: "",
   sourceParagraph: "",
   statutoryProvisions: ""
 });
 
-const createAnnotation = (precedent: Precedent): Annotation => ({
+const createAnnotation = (precedent: PrecedentWithInitialAnnotation): Annotation => ({
   case_id: precedent.attributes.precedentNo
     ? `${precedent.attributes.precedentNo.replace(/[^\dA-Za-z]+/g, "_")}`
     : `AL_${precedent.index}`,
@@ -39,10 +46,11 @@ const createAnnotation = (precedent: Precedent): Annotation => ({
   plaintiff: "",
   defendant: "",
   related_persons: "",
-  case_facts: "",
+  case_facts: [{ id: "F1", fact: "" }],
   legal_rules: [emptyRule(1)],
   benchmark_question: "",
   ground_truth: "",
+  legal_conclusion_source: "",
   traceability: "",
   status: precedent.attributes.status,
   effective_date: precedent.attributes.effectiveDate,
@@ -54,13 +62,15 @@ const Field = ({
   value,
   onChange,
   multiline = false,
-  placeholder = ""
+  placeholder = "",
+  disabled = false
 }: {
   label: string;
   value: string;
   onChange: (value: string) => void;
   multiline?: boolean;
   placeholder?: string;
+  disabled?: boolean;
 }) => (
   <label className="block">
     <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500">
@@ -68,14 +78,16 @@ const Field = ({
     </span>
     {multiline ? (
       <textarea
-        className="min-h-24 w-full border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900"
+        disabled={disabled}
+        className="min-h-24 w-full border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-slate-900 disabled:bg-slate-100 disabled:text-slate-500"
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
       />
     ) : (
       <input
-        className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-900"
+        disabled={disabled}
+        className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-900 disabled:bg-slate-100 disabled:text-slate-500"
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
@@ -115,12 +127,29 @@ const IconButton = ({
 
 export function App() {
   const [selectedPage, setSelectedPage] = useState(1);
-  const [precedents, setPrecedents] = useState<Precedent[]>([]);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalCount, setTotalCount] = useState(0);
+  const [precedents, setPrecedents] = useState<PrecedentWithInitialAnnotation[]>([]);
   const [annotations, setAnnotations] = useState<AnnotationStore>(() => loadAnnotations());
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [activeIndex, setActiveIndex] = useState<number | null>(null);
   const [draft, setDraft] = useState<Annotation | null>(null);
+
+  const [showGuideModal, setShowGuideModal] = useState(() => {
+    return !sessionStorage.getItem("has_seen_labeling_guide");
+  });
+
+  const pendingIndexRef = useRef<number | "LAST" | null>(null);
+
+  const closeGuideModal = () => {
+    sessionStorage.setItem("has_seen_labeling_guide", "true");
+    setShowGuideModal(false);
+  };
+
+  const openLabelingGuide = () => {
+    window.open(LABELING_GUIDE_URL, "_blank", "noopener,noreferrer");
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -128,13 +157,31 @@ export function App() {
     setError("");
 
     fetchPrecedents(selectedPage)
-      .then((items) => {
-        if (!cancelled) setPrecedents(items);
+      .then(({ items, totalPages, totalCount }) => {
+        if (!cancelled) {
+          setPrecedents(items);
+          setTotalPages(totalPages);
+          setTotalCount(totalCount);
+
+          const pending = pendingIndexRef.current;
+          if (pending !== null) {
+            pendingIndexRef.current = null;
+            const targetIdx = pending === "LAST" ? items.length - 1 : pending;
+            if (targetIdx >= 0 && targetIdx < items.length) {
+              const precedent = items[targetIdx];
+              setActiveIndex(targetIdx);
+              setDraft(
+                annotations[precedent.id] ?? precedent.initialAnnotation ?? createAnnotation(precedent)
+              );
+            }
+          }
+        }
       })
       .catch((err: Error) => {
         if (!cancelled) {
           setPrecedents([]);
           setError(err.message);
+          pendingIndexRef.current = null;
         }
       })
       .finally(() => {
@@ -144,7 +191,15 @@ export function App() {
     return () => {
       cancelled = true;
     };
-  }, [selectedPage]);
+  }, [selectedPage, annotations]);
+
+  useEffect(() => {
+    loadAnnotationsAsync().then((stored) => {
+      if (stored && Object.keys(stored).length > 0) {
+        setAnnotations((prev) => ({ ...prev, ...stored }));
+      }
+    });
+  }, []);
 
   useEffect(() => {
     saveAnnotations(annotations);
@@ -156,20 +211,58 @@ export function App() {
   const openDialog = (index: number) => {
     const precedent = precedents[index];
     setActiveIndex(index);
-    setDraft(annotations[precedent.id] ?? createAnnotation(precedent));
+    setDraft(annotations[precedent.id] ?? precedent.initialAnnotation ?? createAnnotation(precedent));
   };
 
   const moveDialog = (offset: number) => {
     if (activeIndex === null) return;
     const nextIndex = activeIndex + offset;
-    if (nextIndex < 0 || nextIndex >= precedents.length) return;
-    openDialog(nextIndex);
+    if (nextIndex >= 0 && nextIndex < precedents.length) {
+      openDialog(nextIndex);
+    } else if (offset > 0 && selectedPage < totalPages) {
+      pendingIndexRef.current = 0;
+      setSelectedPage((page) => page + 1);
+    } else if (offset < 0 && selectedPage > 1) {
+      pendingIndexRef.current = "LAST";
+      setSelectedPage((page) => page - 1);
+    }
   };
 
   const updateDraft = <K extends keyof Annotation>(key: K, value: Annotation[K]) => {
     setDraft((current) => (current ? { ...current, [key]: value } : current));
   };
 
+  // Facts handlers
+  const updateFact = (index: number, value: string) => {
+    setDraft((current) => {
+      if (!current) return current;
+      const updated = current.case_facts.map((item, i) =>
+        i === index ? { ...item, fact: value } : item
+      );
+      return { ...current, case_facts: updated };
+    });
+  };
+
+  const addFact = () => {
+    setDraft((current) => {
+      if (!current) return current;
+      const nextId = `F${current.case_facts.length + 1}`;
+      return {
+        ...current,
+        case_facts: [...current.case_facts, { id: nextId, fact: "" }]
+      };
+    });
+  };
+
+  const removeFact = (index: number) => {
+    setDraft((current) => {
+      if (!current || current.case_facts.length <= 1) return current;
+      const updated = current.case_facts.filter((_, i) => i !== index);
+      return { ...current, case_facts: updated };
+    });
+  };
+
+  // Rules handlers
   const updateRule = (index: number, patch: Partial<RuleDraft>) => {
     setDraft((current) => {
       if (!current) return current;
@@ -177,6 +270,67 @@ export function App() {
         ruleIndex === index ? { ...rule, ...patch } : rule
       );
       return { ...current, legal_rules: legalRules };
+    });
+  };
+
+  const addRuleSection = () => {
+    setDraft((current) => {
+      if (!current) return current;
+      const nextIndex = current.legal_rules.length + 1;
+      const newRule: RuleDraft = {
+        id: `R${nextIndex}`,
+        operator: "AND",
+        conditions: [""],
+        conclusion: "",
+        exception: "",
+        sourceParagraph: "",
+        statutoryProvisions: ""
+      };
+      return { ...current, legal_rules: [...current.legal_rules, newRule] };
+    });
+  };
+
+  const removeRuleSection = (index: number) => {
+    setDraft((current) => {
+      if (!current || current.legal_rules.length <= 1) return current;
+      const updated = current.legal_rules.filter((_, i) => i !== index);
+      const reindexed = updated.map((rule, idx) => ({ ...rule, id: `R${idx + 1}` }));
+      return { ...current, legal_rules: reindexed };
+    });
+  };
+
+  const addRuleCondition = (ruleIndex: number) => {
+    setDraft((current) => {
+      if (!current) return current;
+      const updatedRules = current.legal_rules.map((rule, rIdx) => {
+        if (rIdx !== ruleIndex) return rule;
+        return { ...rule, conditions: [...rule.conditions, ""] };
+      });
+      return { ...current, legal_rules: updatedRules };
+    });
+  };
+
+  const updateRuleCondition = (ruleIndex: number, condIndex: number, value: string) => {
+    setDraft((current) => {
+      if (!current) return current;
+      const updatedRules = current.legal_rules.map((rule, rIdx) => {
+        if (rIdx !== ruleIndex) return rule;
+        const updatedConds = rule.conditions.map((c, cIdx) => (cIdx === condIndex ? value : c));
+        return { ...rule, conditions: updatedConds };
+      });
+      return { ...current, legal_rules: updatedRules };
+    });
+  };
+
+  const removeRuleCondition = (ruleIndex: number, condIndex: number) => {
+    setDraft((current) => {
+      if (!current) return current;
+      const updatedRules = current.legal_rules.map((rule, rIdx) => {
+        if (rIdx !== ruleIndex || rule.conditions.length <= 1) return rule;
+        const updatedConds = rule.conditions.filter((_, cIdx) => cIdx !== condIndex);
+        return { ...rule, conditions: updatedConds };
+      });
+      return { ...current, legal_rules: updatedRules };
     });
   };
 
@@ -202,10 +356,14 @@ export function App() {
           <div>
             <h1 className="text-2xl font-semibold tracking-normal">VPREC-Eval Annotator</h1>
             <p className="mt-1 text-sm text-slate-600">
-              Trang {selectedPage}. Đã gán nhãn {annotatedCount} án lệ.
+              Trang {selectedPage} / {totalPages}. Đã gán nhãn {annotatedCount} / {totalCount} án lệ.
             </p>
           </div>
           <div className="flex flex-wrap gap-2">
+            <IconButton onClick={openLabelingGuide} title="Xem hướng dẫn gán nhãn">
+              <BookOpen size={16} />
+              Xem hướng dẫn gán nhãn
+            </IconButton>
             <IconButton onClick={exportData} title="Xuất CSV">
               <Download size={16} />
               Xuất dữ liệu đã gán nhãn
@@ -222,7 +380,10 @@ export function App() {
               <ArrowLeft size={16} />
               Trang trước
             </IconButton>
-            <IconButton onClick={() => setSelectedPage((page) => page + 1)} disabled={loading}>
+            <IconButton
+              onClick={() => setSelectedPage((page) => Math.min(totalPages, page + 1))}
+              disabled={selectedPage === totalPages || loading}
+            >
               Trang tiếp
               <ArrowRight size={16} />
             </IconButton>
@@ -315,14 +476,49 @@ export function App() {
                 </button>
               </div>
               {activePrecedent.pdfUrl ? (
-                <iframe
-                  title={activePrecedent.name}
-                  src={activePrecedent.pdfUrl}
-                  className="h-full min-h-[380px] w-full flex-1"
-                />
+                <div className="flex h-full flex-col">
+                  <div className="flex items-center justify-between border-b border-slate-100 bg-slate-50 px-4 py-2 text-xs text-slate-600">
+                    <span className="truncate font-mono">
+                      {decodeURIComponent(activePrecedent.pdfUrl.split("/").pop() || "")}
+                    </span>
+                    <a
+                      href={activePrecedent.pdfUrl}
+                      download
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="inline-flex items-center gap-1 text-slate-900 underline hover:text-slate-600"
+                    >
+                      <Download size={14} /> Tải văn bản gốc
+                    </a>
+                  </div>
+                  {activePrecedent.pdfUrl.toLowerCase().endsWith(".pdf") ? (
+                    <iframe
+                      title={activePrecedent.name}
+                      src={activePrecedent.pdfUrl}
+                      className="h-full min-h-[380px] w-full flex-1"
+                    />
+                  ) : (
+                    <div className="flex h-full flex-1 flex-col items-center justify-center p-6 text-center text-sm text-slate-600">
+                      <p className="mb-3 font-medium">Tập tin văn bản dạng Word (.docx / .doc)</p>
+                      <p className="mb-4 text-xs text-slate-500">
+                        Văn bản án lệ này được lưu trữ dưới dạng file Word trong thư mục data local.
+                      </p>
+                      <a
+                        href={activePrecedent.pdfUrl}
+                        download
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex h-10 items-center gap-2 border border-slate-900 bg-slate-900 px-4 text-sm font-medium text-white hover:bg-slate-800"
+                      >
+                        <Download size={16} /> Tải xuống file văn bản (
+                        {activePrecedent.pdfUrl.split(".").pop()?.toUpperCase()})
+                      </a>
+                    </div>
+                  )}
+                </div>
               ) : (
                 <div className="flex h-full items-center justify-center p-6 text-sm text-slate-500">
-                  Không tìm thấy liên kết PDF trong dòng dữ liệu này.
+                  Không tìm thấy liên kết văn bản cho án lệ này.
                 </div>
               )}
             </section>
@@ -330,13 +526,19 @@ export function App() {
             <section className="flex min-h-0 flex-col">
               <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-200 px-4 py-3">
                 <div className="flex gap-2">
-                  <IconButton onClick={() => moveDialog(-1)} disabled={activeIndex === 0}>
+                  <IconButton
+                    onClick={() => moveDialog(-1)}
+                    disabled={loading || (selectedPage === 1 && activeIndex === 0)}
+                  >
                     <ArrowLeft size={16} />
                     Án lệ trước đó
                   </IconButton>
                   <IconButton
                     onClick={() => moveDialog(1)}
-                    disabled={activeIndex === precedents.length - 1}
+                    disabled={
+                      loading ||
+                      (selectedPage === totalPages && activeIndex === precedents.length - 1)
+                    }
                   >
                     Án lệ tiếp theo
                     <ArrowRight size={16} />
@@ -355,6 +557,7 @@ export function App() {
                       label="Mã vụ việc"
                       value={draft.case_id}
                       onChange={(value) => updateDraft("case_id", value)}
+                      disabled
                     />
                     <Field
                       label="Số án lệ"
@@ -415,24 +618,61 @@ export function App() {
                 </Step>
 
                 <Step title="Bước 2. Trích xuất tình tiết vụ án">
-                  <Field
-                    label="Các tình tiết vụ án"
-                    value={draft.case_facts}
-                    onChange={(value) => updateDraft("case_facts", value)}
-                    multiline
-                    placeholder="Mỗi dòng một fact. Có thể ghi F1: ..."
-                  />
+                  <div className="space-y-3">
+                    {draft.case_facts.map((factItem, index) => (
+                      <div key={factItem.id || index} className="flex items-center gap-2">
+                        <span className="inline-flex h-10 w-12 shrink-0 items-center justify-center border border-slate-300 bg-slate-100 font-mono text-xs font-semibold uppercase text-slate-700">
+                          {`F${index + 1}`}
+                        </span>
+                        <input
+                          className="h-10 flex-1 border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-900"
+                          value={factItem.fact}
+                          onChange={(e) => updateFact(index, e.target.value)}
+                          placeholder={`Nhập tình tiết F${index + 1}...`}
+                        />
+                        <button
+                          type="button"
+                          onClick={() => removeFact(index)}
+                          disabled={draft.case_facts.length <= 1}
+                          className="inline-flex h-10 w-10 shrink-0 items-center justify-center border border-slate-300 bg-white text-slate-600 hover:border-slate-900 hover:text-slate-900 disabled:opacity-40 disabled:hover:border-slate-300"
+                          title="Xóa tình tiết"
+                        >
+                          <Minus size={16} />
+                        </button>
+                      </div>
+                    ))}
+                    <IconButton onClick={addFact}>
+                      <Plus size={16} /> Thêm tình tiết
+                    </IconButton>
+                  </div>
                 </Step>
 
                 <Step title="Bước 3. Suy luận quy tắc pháp lý">
                   <div className="space-y-4">
                     {draft.legal_rules.map((rule, index) => (
-                      <div key={`${rule.id}-${index}`} className="border border-slate-200 p-3">
-                        <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-[1fr_160px]">
+                      <div
+                        key={`${rule.id}-${index}`}
+                        className="relative border border-slate-300 bg-white p-4"
+                      >
+                        <div className="mb-3 flex items-center justify-between border-b border-slate-200 pb-2">
+                          <h4 className="font-semibold text-slate-900">Quy tắc {`R${index + 1}`}</h4>
+                          <button
+                            type="button"
+                            onClick={() => removeRuleSection(index)}
+                            disabled={draft.legal_rules.length <= 1}
+                            className="inline-flex h-8 w-8 items-center justify-center text-slate-500 hover:text-red-600 disabled:opacity-30 disabled:hover:text-slate-500"
+                            title="Xóa quy tắc này"
+                          >
+                            <Trash2 size={18} />
+                          </button>
+                        </div>
+                        <div className="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-[110px_1fr_190px]">
+                          <Field label="Mã quy tắc" value={`R${index + 1}`} onChange={() => { }} disabled />
                           <Field
-                            label="Mã quy tắc"
-                            value={rule.id}
-                            onChange={(value) => updateRule(index, { id: value })}
+                            label="Tên quy tắc"
+                            value={rule.name || ""}
+                            onChange={(val) => updateRule(index, { name: val })}
+                            placeholder="Nhập tên quy tắc..."
                           />
                           <label className="block">
                             <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500">
@@ -442,22 +682,106 @@ export function App() {
                               className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-900"
                               value={rule.operator}
                               onChange={(event) =>
-                                updateRule(index, { operator: event.target.value as "AND" | "OR" })
+                                updateRule(index, {
+                                  operator: event.target.value as "AND" | "OR"
+                                })
                               }
                             >
-                              <option value="AND">AND</option>
-                              <option value="OR">OR</option>
+                              <option value="AND">VÀ (tất cả đều thoả mãn)</option>
+                              <option value="OR">HOẶC (một trong các điều kiện thoả mãn)</option>
                             </select>
                           </label>
                         </div>
+
+                        {/* Conditions section */}
+                        <div className="mb-3 space-y-2 border-t border-slate-100 pt-3">
+                          <span className="block text-xs font-medium uppercase tracking-wide text-slate-500">
+                            Các điều kiện
+                          </span>
+                          {rule.conditions.map((cond, cIdx) => {
+                            const trimmedCond = cond.trim();
+
+                            let selectedRuleId = "";
+                            if (trimmedCond) {
+                              const matchedRule = draft.legal_rules.find(
+                                (r) => r.id !== rule.id && (
+                                  (r.name && r.name.trim() === trimmedCond) ||
+                                  (r.name && `${r.id}: ${r.name}`.trim() === trimmedCond) ||
+                                  r.conclusion.trim() === trimmedCond ||
+                                  `${r.id}: ${r.conclusion}`.trim() === trimmedCond ||
+                                  r.id === trimmedCond
+                                )
+                              );
+                              if (matchedRule) {
+                                selectedRuleId = matchedRule.id;
+                              }
+                            }
+
+                            return (
+                              <div key={cIdx} className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                                <div className="flex items-center gap-2">
+                                  <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center border border-slate-300 bg-slate-100 font-mono text-xs font-semibold text-slate-700">
+                                    {`C${cIdx + 1}`}
+                                  </span>
+                                  <select
+                                    className="h-10 w-full border border-slate-300 bg-white px-2 text-xs text-slate-700 outline-none focus:border-slate-900 sm:w-48"
+                                    value={selectedRuleId}
+                                    onChange={(e) => {
+                                      const chosenRuleId = e.target.value;
+                                      if (chosenRuleId) {
+                                        const targetRule = draft.legal_rules.find((r) => r.id === chosenRuleId);
+                                        if (targetRule) {
+                                          const ruleText = targetRule.name
+                                            ? `${targetRule.id}: ${targetRule.name}`
+                                            : (targetRule.conclusion ? `${targetRule.id}: ${targetRule.conclusion}` : targetRule.id);
+                                          updateRuleCondition(index, cIdx, ruleText);
+                                        }
+                                      } else {
+                                        updateRuleCondition(index, cIdx, "");
+                                      }
+                                    }}
+                                  >
+                                    <option value="">-- Không tham chiếu --</option>
+                                    {draft.legal_rules.map((r, rIdx) => {
+                                      const ruleId = r.id || `R${rIdx + 1}`;
+                                      if (ruleId === `R${index + 1}` || ruleId === rule.id) return null;
+                                      const ruleDisplayName = r.name
+                                        ? r.name
+                                        : (r.conclusion ? (r.conclusion.length > 25 ? `${r.conclusion.slice(0, 25)}...` : r.conclusion) : "(Chưa có tên)");
+                                      return (
+                                        <option key={`rule-${ruleId}`} value={ruleId}>
+                                          {`[${ruleId}] ${ruleDisplayName}`}
+                                        </option>
+                                      );
+                                    })}
+                                  </select>
+                                </div>
+                                <div className="flex flex-1 items-center gap-2">
+                                  <input
+                                    className="h-10 flex-1 border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-900"
+                                    value={cond}
+                                    onChange={(e) => updateRuleCondition(index, cIdx, e.target.value)}
+                                    placeholder={`Điền tên điều kiện C${cIdx + 1}...`}
+                                  />
+                                  <button
+                                    type="button"
+                                    onClick={() => removeRuleCondition(index, cIdx)}
+                                    disabled={rule.conditions.length <= 1}
+                                    className="inline-flex h-10 w-10 shrink-0 items-center justify-center border border-slate-300 bg-white text-slate-600 hover:border-slate-900 hover:text-slate-900 disabled:opacity-40"
+                                    title="Xóa điều kiện"
+                                  >
+                                    <Minus size={16} />
+                                  </button>
+                                </div>
+                              </div>
+                            );
+                          })}
+                          <IconButton onClick={() => addRuleCondition(index)}>
+                            <Plus size={16} /> Thêm điều kiện
+                          </IconButton>
+                        </div>
+
                         <div className="space-y-3">
-                          <Field
-                            label="Điều kiện"
-                            value={rule.conditions}
-                            onChange={(value) => updateRule(index, { conditions: value })}
-                            multiline
-                            placeholder="Mỗi dòng một condition"
-                          />
                           <Field
                             label="Hệ quả pháp lý"
                             value={rule.conclusion}
@@ -469,7 +793,7 @@ export function App() {
                             value={rule.exception}
                             onChange={(value) => updateRule(index, { exception: value })}
                             multiline
-                            placeholder="Để trống nếu không có exception"
+                            placeholder="Để trống nếu không có ngoại lệ"
                           />
                           <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
                             <Field
@@ -489,22 +813,15 @@ export function App() {
                         </div>
                       </div>
                     ))}
-                    <IconButton
-                      onClick={() =>
-                        updateDraft("legal_rules", [
-                          ...draft.legal_rules,
-                          emptyRule(draft.legal_rules.length + 1)
-                        ])
-                      }
-                    >
-                      Thêm rule
+                    <IconButton onClick={addRuleSection}>
+                      <Plus size={16} /> Thêm quy tắc mới
                     </IconButton>
                   </div>
                 </Step>
 
-                <Step title="Bước 4. Xây dựng câu hỏi benchmark">
+                <Step title="Bước 4. CÂU HỎI PHÁP LÝ CẦN TRẢ LỜI">
                   <Field
-                    label="Câu hỏi benchmark"
+                    label="Câu hỏi pháp lý cần trả lời"
                     value={draft.benchmark_question}
                     onChange={(value) => updateDraft("benchmark_question", value)}
                     multiline
@@ -512,44 +829,80 @@ export function App() {
                 </Step>
 
                 <Step title="Bước 5. Xác định đáp án đúng">
-                  <label className="block">
-                    <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500">
-                      Đáp án đúng
-                    </span>
-                    <select
-                      className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-900"
-                      value={String(draft.ground_truth)}
-                      onChange={(event) => {
-                        const value = event.target.value;
-                        updateDraft(
-                          "ground_truth",
-                          value === "" ? "" : value === "true"
-                        );
-                      }}
-                    >
-                      <option value="">Chưa chọn</option>
-                      <option value="true">true</option>
-                      <option value="false">false</option>
-                    </select>
-                  </label>
-                </Step>
-
-                <Step title="Bước 6. Kiểm tra chất lượng và truy vết">
-                  <Field
-                    label="Truy vết nguồn"
-                    value={draft.traceability}
-                    onChange={(value) => updateDraft("traceability", value)}
-                    multiline
-                    placeholder="Mỗi dòng một mapping. Ví dụ F1: Đoạn [10]"
-                  />
-                  <div className="grid grid-cols-1 gap-3 text-xs text-slate-600 md:grid-cols-3">
-                    <div>Trạng thái: {draft.status || "Chưa có"}</div>
-                    <div>Ngày áp dụng: {draft.effective_date || "Chưa có"}</div>
-                    <div>Ngày công bố: {draft.publication_date || "Chưa có"}</div>
+                  <div className="space-y-3">
+                    <label className="block">
+                      <span className="mb-1 block text-xs font-medium uppercase tracking-wide text-slate-500">
+                        Đáp án đúng
+                      </span>
+                      <select
+                        className="h-10 w-full border border-slate-300 bg-white px-3 text-sm outline-none focus:border-slate-900"
+                        value={String(draft.ground_truth)}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          updateDraft(
+                            "ground_truth",
+                            value === "" ? "" : value === "true"
+                          );
+                        }}
+                      >
+                        <option value="">Chưa chọn</option>
+                        <option value="true">true</option>
+                        <option value="false">false</option>
+                      </select>
+                    </label>
+                    <Field
+                      label="Đoạn nguồn xác định kết luận"
+                      value={draft.legal_conclusion_source || ""}
+                      onChange={(value) => updateDraft("legal_conclusion_source", value)}
+                      multiline
+                      placeholder="Nhập đoạn nguồn xác định kết luận..."
+                    />
                   </div>
                 </Step>
               </div>
             </section>
+          </div>
+        </div>
+      )}
+      {showGuideModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 p-4">
+          <div className="w-full max-w-md border border-slate-300 bg-white p-6 shadow-xl">
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <h3 className="flex items-center gap-2 text-base font-semibold text-slate-900">
+                <BookOpen size={18} className="text-slate-700" />
+                Hướng dẫn gán nhãn
+              </h3>
+              <button
+                type="button"
+                onClick={closeGuideModal}
+                className="text-slate-400 hover:text-slate-600"
+              >
+                <X size={18} />
+              </button>
+            </div>
+            <div className="py-4 text-sm text-slate-700">
+              Để đảm bảo nhãn được gán đúng quy trình, vui lòng đảm bảo đã đọc kỹ &quot;Hướng dẫn gán nhãn&quot;.
+            </div>
+            <div className="flex flex-wrap items-center justify-end gap-2 pt-2">
+              <button
+                type="button"
+                onClick={closeGuideModal}
+                className="h-10 border border-slate-300 bg-white px-4 text-sm font-medium text-slate-700 hover:border-slate-900"
+              >
+                Đã hiểu
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  openLabelingGuide();
+                  closeGuideModal();
+                }}
+                className="inline-flex h-10 items-center gap-2 border border-slate-900 bg-slate-900 px-4 text-sm font-medium text-white hover:bg-slate-800"
+              >
+                <BookOpen size={16} />
+                Xem hướng dẫn gán nhãn
+              </button>
+            </div>
           </div>
         </div>
       )}
